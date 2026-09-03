@@ -1,4 +1,4 @@
-const CACHE = 'mila-v1';
+const CACHE = 'mila-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -21,16 +21,32 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
-  // Never cache Supabase API calls — always go to the network.
-  if (url.hostname.endsWith('supabase.co')) return;
+  if (url.hostname.endsWith('supabase.co')) return;   // le chiamate al database vanno sempre in rete
   if (e.request.method !== 'GET') return;
 
-  // App shell: cache-first, fall back to network.
+  const isHTML = e.request.mode === 'navigate'
+    || e.request.destination === 'document'
+    || url.pathname.endsWith('/')
+    || url.pathname.endsWith('index.html');
+
+  if (isHTML) {
+    // Pagina: prima la rete (così gli aggiornamenti si vedono subito), cache come riserva offline
+    e.respondWith(
+      fetch(e.request).then(res => {
+        const copy = res.clone();
+        caches.open(CACHE).then(c => c.put('./index.html', copy)).catch(() => {});
+        return res;
+      }).catch(() => caches.match('./index.html'))
+    );
+    return;
+  }
+
+  // Risorse statiche (icone, manifest): prima la cache
   e.respondWith(
     caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
       return res;
-    }).catch(() => caches.match('./index.html')))
+    }))
   );
 });
