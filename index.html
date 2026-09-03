@@ -136,7 +136,7 @@
   .bc-arrow{font-family:'Fredoka';font-size:28px;color:var(--plum-soft);line-height:1;}
   .settle-row{display:flex;align-items:center;gap:10px;background:var(--cloud);border-radius:14px;padding:11px 12px;margin-bottom:8px;box-shadow:var(--shadow-sm);}
   .icon-x{width:30px;height:30px;border-radius:9px;background:var(--soft);color:var(--rose-deep);font-weight:800;flex:none;}
-  .split-hint{font-size:11px;color:var(--mint-deep);font-weight:800;}
+  .stat-sub{font-size:11px;color:var(--plum-soft);font-weight:700;margin-top:3px;}
 
   /* ---- auth screen ---- */
   .auth{max-width:420px;margin:0 auto;padding:calc(40px + env(safe-area-inset-top)) 24px 40px;text-align:center;}
@@ -180,8 +180,6 @@
   <div class="cat-grid" id="cat-grid"></div>
   <label>Chi ha pagato (anticipato)</label>
   <div class="payer-row" id="payer-row"></div>
-  <label>Come si divide</label>
-  <div class="payer-row" id="split-row"></div>
   <label>Data</label>
   <input class="field" id="exp-date" type="date" />
   <button class="btn-primary" id="exp-save">Salva spesa</button>
@@ -249,7 +247,7 @@ let settings = { child:'Mila', p1:'Mamma', p2:'Papà', defaultInps:0, overrides:
 let expenses = [];
 let settlements = [];
 let familyId = null, userEmail = null;
-let state = { view:'home', month: startOfMonth(new Date()), filter:'all', editingId:null, formCat:'pannolini', formPayer:'p1', formSplit:'half' };
+let state = { view:'home', month: startOfMonth(new Date()), filter:'all', editingId:null, formCat:'pannolini', formPayer:'p1' };
 
 /* ---------------- helpers ---------------- */
 function startOfMonth(d){ return new Date(d.getFullYear(), d.getMonth(), 1); }
@@ -271,17 +269,30 @@ function newCode(){ const a='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(le
 function mapRow(r){ return { id:r.id, amount:Number(r.amount), description:r.description||'', category:r.category||'altro', paidBy:r.paid_by||'p1', split:r.split||'half', date:r.spent_on, createdAt: Date.parse(r.created_at)||Date.now() }; }
 function mapSettle(r){ return { id:r.id, payer:r.payer||'p1', amount:Number(r.amount), date:r.spent_on, createdAt: Date.parse(r.created_at)||Date.now() }; }
 
-// quanto è a carico di "who" per questa spesa (responsabilità)
-function shareOf(e, who){ const a=+e.amount||0; if(e.split==='p1') return who==='p1'?a:0; if(e.split==='p2') return who==='p2'?a:0; return a/2; }
-// quanto ha anticipato "who" per questa spesa (cassa)
-function frontedBy(e, who){ return e.paidBy===who ? (+e.amount||0) : 0; }
-// saldo complessivo: netP1>0 => p2 deve a p1 ; netP1<0 => p1 deve a p2
+// giorno di accredito dell'assegno (1-28), salvato dentro overrides
+function inpsDay(){ const n=parseInt(settings.overrides && settings.overrides.assegnoDay,10); return (n>=1&&n<=28)?n:1; }
+function inpsForKey(k){ return (k in settings.overrides) ? settings.overrides[k] : settings.defaultInps; }
+
+// Saldo assegno-based, calcolato mese per mese.
+// Per ogni mese: l'assegno (incassato da p1/mamma) copre le spese; solo l'eccedenza
+// si divide 50/50. Chi ha anticipato più della sua quota è a credito.
+// Convenzione: netP1 > 0 => p2 deve a p1 ; netP1 < 0 => p1 deve a p2
 function computeBalance(){
-  let fP1=0,fP2=0,sP1=0,sP2=0;
-  expenses.forEach(e=>{ fP1+=frontedBy(e,'p1'); fP2+=frontedBy(e,'p2'); sP1+=shareOf(e,'p1'); sP2+=shareOf(e,'p2'); });
-  let netP1 = fP1 - sP1;
+  const byMonth = {};
+  expenses.forEach(e=>{
+    const k=(e.date||'').slice(0,7); if(!k) return;
+    (byMonth[k]=byMonth[k]||{sm:0,sp:0});
+    if(e.paidBy==='p2') byMonth[k].sp+=(+e.amount||0); else byMonth[k].sm+=(+e.amount||0);
+  });
+  let netP1=0, frontP1=0, frontP2=0;
+  Object.keys(byMonth).forEach(k=>{
+    const {sm,sp}=byMonth[k]; frontP1+=sm; frontP2+=sp;
+    const A=inpsForKey(k);
+    const excess=Math.max(sm+sp-A, 0);   // lo "sforato" del mese
+    netP1 += (excess/2 - sp);            // quota di p1 sull'eccedenza, meno quanto ha anticipato p2
+  });
   settlements.forEach(s=>{ if(s.payer==='p1') netP1 += (+s.amount||0); else netP1 -= (+s.amount||0); });
-  return { netP1, frontP1:fP1, frontP2:fP2 };
+  return { netP1, frontP1, frontP2 };
 }
 
 async function loadData(){
@@ -357,14 +368,20 @@ function renderHome(){
     ${monthNav()}
     <div class="jar-card"><div class="caption">Rimasti nel salvadanaio</div><div class="jar-wrap">${jarSVG(ratio)}</div>
       <div class="remain-amount ${remClass}">${eur(remaining)}</div><div class="remain-sub">${subText}</div></div>
-    <div class="stats"><div class="stat income" data-edit-inps><div class="k"><span class="dot">●</span> Assegno INPS</div><div class="v">${eur(inps)}</div></div>
+    <div class="stats"><div class="stat income" data-edit-inps><div class="k"><span class="dot">●</span> Assegno INPS</div><div class="v">${eur(inps)}</div>${inps>0?`<div class="stat-sub">il ${inpsDay()} · a ${escapeHtml(settings.p1)}</div>`:''}</div>
       <div class="stat spent"><div class="k"><span class="dot">●</span> Speso</div><div class="v">${eur(spent)}</div></div></div>
     ${balanceCard()}
-    <div class="section-title">Ultime spese ${list.length>4?'<a data-nav="list">Vedi tutte</a>':''}</div>
-    ${recent.length ? recent.map(expRow).join('') : emptyExp()}</div>`;
+    <div class="section-title">Movimenti del mese ${list.length>4?'<a data-nav="list">Vedi tutte</a>':''}</div>
+    ${incomeRow(state.month)}
+    ${recent.length ? recent.map(expRow).join('') : (inps>0?'':emptyExp())}</div>`;
 }
-function splitTag(e){ if(!e.split||e.split==='half') return ''; const n=e.split==='p1'?settings.p1:settings.p2; return ` · <span class="split-hint">tutta a ${escapeHtml(n)}</span>`; }
-function expRow(e){ const c=catById(e.category); return `<div class="exp" data-exp="${e.id}"><div class="emo" style="background:${c.bg}">${c.e}</div><div class="mid"><div class="desc">${escapeHtml(e.description||c.name)}</div><div class="meta">${dayLabel(e.date)} · ${payerAvatar(e.paidBy)} ${escapeHtml(payerName(e.paidBy))}${splitTag(e)}</div></div><div class="amt">${eur(e.amount)}</div></div>`; }
+function incomeRow(d){
+  const a = inpsFor(d); if(!(a>0)) return '';
+  const day = Math.min(inpsDay(), 28);
+  const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  return `<div class="exp" data-edit-inps><div class="emo" style="background:#E5F6EF">🏦</div><div class="mid"><div class="desc">Assegno unico</div><div class="meta">${dayLabel(iso)} · a ${escapeHtml(settings.p1)}</div></div><div class="amt" style="color:var(--mint-deep)">+${eur(a)}</div></div>`;
+}
+function expRow(e){ const c=catById(e.category); return `<div class="exp" data-exp="${e.id}"><div class="emo" style="background:${c.bg}">${c.e}</div><div class="mid"><div class="desc">${escapeHtml(e.description||c.name)}</div><div class="meta">${dayLabel(e.date)} · ${payerAvatar(e.paidBy)} ${escapeHtml(payerName(e.paidBy))}</div></div><div class="amt">${eur(e.amount)}</div></div>`; }
 
 function balanceCard(){
   const b = computeBalance(); const net = b.netP1; let line;
@@ -384,7 +401,8 @@ function renderList(){
   const usedCats = [...new Set(list.map(e=>e.category))];
   const chips = `<div class="chips"><button class="chip ${state.filter==='all'?'active':''}" data-filter="all">Tutte</button>${CATS.filter(c=>usedCats.includes(c.id)).map(c=>`<button class="chip ${state.filter===c.id?'active':''}" data-filter="${c.id}">${c.e} ${c.name}</button>`).join('')}</div>`;
   app.innerHTML = topbar() + `<div class="view"><div class="hello">Tutte le spese</div>${monthNav()}${list.length?chips:''}
-    ${filtered.length ? filtered.map(expRow).join('') : emptyExp()}
+    ${state.filter==='all'?incomeRow(state.month):''}
+    ${filtered.length ? filtered.map(expRow).join('') : (inpsFor(state.month)>0?'':emptyExp())}
     ${list.length?`<div class="section-title" style="font-size:16px;margin-top:20px;">Totale ${state.filter==='all'?'del mese':catById(state.filter).name}<span style="font-family:'Fredoka';color:var(--rose-deep)">${eur(sum(filtered))}</span></div>`:''}</div>`;
 }
 function renderStats(){
@@ -404,7 +422,7 @@ function renderSettings(){
   app.innerHTML = topbar() + `<div class="view"><div class="hello">Impostazioni</div>
     <div class="set-block" style="margin-top:12px;"><h3>👶 Nome della bimba</h3><p class="hint">Compare nella schermata principale.</p><input class="field" id="set-child" value="${escapeHtml(settings.child)}" /></div>
     <div class="set-block"><h3>👩‍👨 Genitori</h3><p class="hint">Usati per indicare chi ha pagato ogni spesa.</p><label style="margin-top:2px">Genitore 1</label><input class="field" id="set-p1" value="${escapeHtml(settings.p1)}" /><label>Genitore 2</label><input class="field" id="set-p2" value="${escapeHtml(settings.p2)}" /></div>
-    <div class="set-block"><h3>💶 Assegno unico mensile</h3><p class="hint">Importo INPS predefinito per ogni nuovo mese. Puoi modificare un singolo mese dalla schermata principale.</p><div class="amount-input"><span class="euro">€</span><input class="field" id="set-inps" type="number" inputmode="decimal" step="0.01" value="${settings.defaultInps||''}" placeholder="0,00" /></div></div>
+    <div class="set-block"><h3>💶 Assegno unico mensile</h3><p class="hint">Importo INPS predefinito per ogni nuovo mese (incassato da ${escapeHtml(settings.p1)}). Puoi modificare un singolo mese dalla schermata principale.</p><div class="amount-input"><span class="euro">€</span><input class="field" id="set-inps" type="number" inputmode="decimal" step="0.01" value="${settings.defaultInps||''}" placeholder="0,00" /></div><label>Giorno di accredito (1–28)</label><input class="field" id="set-inps-day" type="number" inputmode="numeric" min="1" max="28" step="1" value="${inpsDay()}" /></div>
     <button class="btn-primary" id="set-save">Salva impostazioni</button>
     <div class="set-block" style="margin-top:22px;background:#FFF7F3;"><h3>👨‍👩‍👧 Codice famiglia</h3><p class="hint">Condividi questo codice con ${escapeHtml(settings.p2)} per far vedere anche a lui/lei le stesse spese: al primo accesso sceglie "Unisciti" e lo inserisce.</p><div class="code-pill">${escapeHtml(familyId||'')}</div></div>
     <button class="btn-ghost" id="logout" style="color:var(--plum-soft)">Esci (${escapeHtml(userEmail||'')})</button>
@@ -414,16 +432,15 @@ function renderSettings(){
 /* ---------------- sheets ---------------- */
 function buildCatGrid(){ document.getElementById('cat-grid').innerHTML = CATS.map(c=>`<div class="cat ${state.formCat===c.id?'active':''}" data-cat="${c.id}"><div class="e">${c.e}</div><div class="n">${c.name}</div></div>`).join(''); }
 function buildPayers(){ document.getElementById('payer-row').innerHTML = `<div class="payer ${state.formPayer==='p1'?'active':''}" data-payer="p1"><div class="av">👩</div><div class="who">${escapeHtml(settings.p1)}</div></div><div class="payer ${state.formPayer==='p2'?'active':''}" data-payer="p2"><div class="av">👨</div><div class="who">${escapeHtml(settings.p2)}</div></div>`; }
-function buildSplit(){ document.getElementById('split-row').innerHTML = `<div class="payer ${state.formSplit==='half'?'active':''}" data-split="half"><div class="av">🤝</div><div class="who">50 / 50</div></div><div class="payer ${state.formSplit==='p1'?'active':''}" data-split="p1"><div class="av">👩</div><div class="who">Tutta a<br>${escapeHtml(settings.p1)}</div></div><div class="payer ${state.formSplit==='p2'?'active':''}" data-split="p2"><div class="av">👨</div><div class="who">Tutta a<br>${escapeHtml(settings.p2)}</div></div>`; }
 function openSheet(n){ document.getElementById('bd-'+n).classList.add('open'); document.getElementById('sheet-'+n).classList.add('open'); }
 function closeSheet(n){ document.getElementById('bd-'+n).classList.remove('open'); document.getElementById('sheet-'+n).classList.remove('open'); }
 
 function openExpense(id){
   state.editingId = id || null;
   const delBtn = document.getElementById('exp-delete');
-  if(id){ const e=expenses.find(x=>x.id===id); document.getElementById('exp-title').textContent='Modifica spesa'; document.getElementById('exp-amount').value=e.amount; document.getElementById('exp-desc').value=e.description||''; document.getElementById('exp-date').value=e.date; state.formCat=e.category; state.formPayer=e.paidBy; state.formSplit=e.split||'half'; delBtn.style.display='block'; }
-  else { document.getElementById('exp-title').textContent='Aggiungi spesa'; document.getElementById('exp-amount').value=''; document.getElementById('exp-desc').value=''; document.getElementById('exp-date').value=todayISO(); state.formCat='pannolini'; state.formPayer='p1'; state.formSplit='half'; delBtn.style.display='none'; }
-  buildCatGrid(); buildPayers(); buildSplit(); openSheet('exp');
+  if(id){ const e=expenses.find(x=>x.id===id); document.getElementById('exp-title').textContent='Modifica spesa'; document.getElementById('exp-amount').value=e.amount; document.getElementById('exp-desc').value=e.description||''; document.getElementById('exp-date').value=e.date; state.formCat=e.category; state.formPayer=e.paidBy; delBtn.style.display='block'; }
+  else { document.getElementById('exp-title').textContent='Aggiungi spesa'; document.getElementById('exp-amount').value=''; document.getElementById('exp-desc').value=''; document.getElementById('exp-date').value=todayISO(); state.formCat='pannolini'; state.formPayer='p1'; delBtn.style.display='none'; }
+  buildCatGrid(); buildPayers(); openSheet('exp');
   setTimeout(()=>document.getElementById('exp-amount').focus(),320);
 }
 async function saveExpense(){
@@ -433,10 +450,10 @@ async function saveExpense(){
   const date = document.getElementById('exp-date').value || todayISO();
   closeSheet('exp');
   if(state.editingId){
-    await sb.from('expenses').update({ amount, description:desc, spent_on:date, category:state.formCat, paid_by:state.formPayer, split:state.formSplit }).eq('id', state.editingId);
+    await sb.from('expenses').update({ amount, description:desc, spent_on:date, category:state.formCat, paid_by:state.formPayer }).eq('id', state.editingId);
     toast('Spesa aggiornata');
   } else {
-    await sb.from('expenses').insert({ family_id:familyId, amount, description:desc, spent_on:date, category:state.formCat, paid_by:state.formPayer, split:state.formSplit });
+    await sb.from('expenses').insert({ family_id:familyId, amount, description:desc, spent_on:date, category:state.formCat, paid_by:state.formPayer });
     state.month = startOfMonth(new Date(date+'T00:00')); toast('Spesa aggiunta 💗');
   }
   state.view='home'; await loadData(); render();
@@ -470,7 +487,7 @@ function contiBody(){
       <div style="display:flex;justify-content:space-between;margin-bottom:8px;font-weight:700"><span>👩 ${escapeHtml(settings.p1)} ha anticipato</span><b>${eur(b.frontP1)}</b></div>
       <div style="display:flex;justify-content:space-between;font-weight:700"><span>👨 ${escapeHtml(settings.p2)} ha anticipato</span><b>${eur(b.frontP2)}</b></div>
       <div style="height:1px;background:var(--line);margin:12px 0"></div>
-      <div class="bc-sub" style="margin:0">Ogni spesa è divisa 50/50, tranne quelle segnate "tutta a" uno dei due. L'assegno INPS è conteggiato a parte per il budget e non entra in questo saldo.</div>
+      <div class="bc-sub" style="margin:0">L'assegno unico (incassato da ${escapeHtml(settings.p1)}) copre le spese del mese; solo la parte eccedente si divide 50/50. Chi ha anticipato più della propria quota è a credito.</div>
     </div>
     ${settleBtn}${hist}`;
 }
@@ -488,7 +505,6 @@ document.addEventListener('click', async e=>{
   const fil=e.target.closest('[data-filter]'); if(fil){ state.filter=fil.dataset.filter; render(); return; }
   const cat=e.target.closest('[data-cat]'); if(cat){ state.formCat=cat.dataset.cat; buildCatGrid(); return; }
   const pay=e.target.closest('[data-payer]'); if(pay){ state.formPayer=pay.dataset.payer; buildPayers(); return; }
-  const spl=e.target.closest('[data-split]'); if(spl){ state.formSplit=spl.dataset.split; buildSplit(); return; }
   if(e.target.closest('[data-open-conti]')){ openConti(); return; }
   if(e.target.id==='conti-cancel'||e.target.id==='bd-conti') closeSheet('conti');
   if(e.target.id==='conti-settle'){
@@ -514,6 +530,8 @@ document.addEventListener('click', async e=>{
     settings.p1=document.getElementById('set-p1').value.trim()||'Mamma';
     settings.p2=document.getElementById('set-p2').value.trim()||'Papà';
     settings.defaultInps=parseFloat((document.getElementById('set-inps').value||'').replace(',','.'))||0;
+    let d=parseInt(document.getElementById('set-inps-day').value,10); if(!(d>=1&&d<=28)) d=1;
+    settings.overrides = settings.overrides || {}; settings.overrides.assegnoDay = d;
     await saveSettings(); toast('Impostazioni salvate 💗'); render();
   }
 });
