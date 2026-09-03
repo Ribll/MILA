@@ -619,8 +619,12 @@ async function boot(){
   await boot();
 })();
 
-/* Service worker */
-if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{})); }
+/* Service worker + auto-aggiornamento */
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+  let reloaded=false;
+  navigator.serviceWorker.addEventListener('controllerchange', ()=>{ if(reloaded) return; reloaded=true; location.reload(); });
+}
 </script>
 </body>
 </html>
